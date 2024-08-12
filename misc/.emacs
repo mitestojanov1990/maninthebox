@@ -11,8 +11,9 @@
 (setq undo-strong-limit 40000000)
 
 ; Determine the underlying operating system
+(setq casey-aquamacs (featurep 'aquamacs))
 (setq casey-linux (featurep 'x))
-(setq casey-win32 (not casey-linux))
+(setq casey-win32 (not (or casey-aquamacs casey-linux)))
 
 (setq casey-todo-file "w:/handmade/code/todo.txt")
 (setq casey-log-file "w:/handmade/code/log.txt")
@@ -23,12 +24,28 @@
 (setq compilation-directory-locked nil)
 (scroll-bar-mode -1)
 (setq shift-select-mode nil)
-(setq enable-local-variables nil)
+(setq enable-local-variables :safe) ; allow local variables
 (setq casey-font "outline-DejaVu Sans Mono")
 
 (when casey-win32
   (setq casey-makescript "build.bat")
   (setq casey-font "outline-Liberation Mono")
+)
+
+(when casey-aquamacs
+  (cua-mode 0)
+  (osx-key-mode 0)
+  (tabbar-mode 0)
+  (setq mac-command-modifier 'meta)
+  (setq x-select-enable-clipboard t)
+  (setq aquamacs-save-options-on-quit 0)
+  (setq special-display-regexps nil)
+  (setq special-display-buffer-names nil)
+  (define-key function-key-map [return] [13])
+  (setq mac-command-key-is-meta t)
+  (scroll-bar-mode nil)
+  (setq mac-pass-command-to-system nil)
+  (setq casey-makescript "./build.macosx")
 )
 
 (when casey-linux
@@ -37,7 +54,7 @@
 )
 
 ; Turn off the toolbar
-(tool-bar-mode 0)
+(tool-bar-mode -1) ; changed to '-'1 to align with emacs convention
 
 (load-library "view")
 (require 'cc-mode)
@@ -103,14 +120,20 @@
 ; Bright-red TODOs
  (setq fixme-modes '(c++-mode c-mode emacs-lisp-mode))
  (make-face 'font-lock-fixme-face)
+ (make-face 'font-lock-study-face)
+ (make-face 'font-lock-important-face)
  (make-face 'font-lock-note-face)
  (mapc (lambda (mode)
 	 (font-lock-add-keywords
 	  mode
 	  '(("\\<\\(TODO\\)" 1 'font-lock-fixme-face t)
+	    ("\\<\\(STUDY\\)" 1 'font-lock-study-face t)
+	    ("\\<\\(IMPORTANT\\)" 1 'font-lock-important-face t)
             ("\\<\\(NOTE\\)" 1 'font-lock-note-face t))))
 	fixme-modes)
  (modify-face 'font-lock-fixme-face "Red" nil nil t nil t nil nil)
+ (modify-face 'font-lock-study-face "Yellow" nil nil t nil t nil nil)
+ (modify-face 'font-lock-important-face "Yellow" nil nil t nil t nil nil)
  (modify-face 'font-lock-note-face "Dark Green" nil nil t nil t nil nil)
 
 ; Accepted file extensions and their appropriate modes
@@ -221,7 +244,7 @@
      (insert "   $Date: $\n")
      (insert "   $Revision: $\n")
      (insert "   $Creator: Casey Muratori $\n")
-     (insert "   $Notice: (C) Copyright 2014 by Molly Rocket, Inc. All Rights Reserved. $\n")
+     (insert "   $Notice: (C) Copyright 2015 by Molly Rocket, Inc. All Rights Reserved. $\n")
      (insert "   ======================================================================== */\n")
      (insert "\n")
      (insert "#define ")
@@ -242,7 +265,7 @@
      (insert "   $Date: $\n")
      (insert "   $Revision: $\n")
      (insert "   $Creator: Casey Muratori $\n")
-     (insert "   $Notice: (C) Copyright 2014 by Molly Rocket, Inc. All Rights Reserved. $\n")
+     (insert "   $Notice: (C) Copyright 2015 by Molly Rocket, Inc. All Rights Reserved. $\n")
      (insert "   ======================================================================== */\n")
   )
 
@@ -307,6 +330,9 @@
   (add-to-list 'compilation-error-regexp-alist-alist '(casey-devenv
    "*\\([0-9]+>\\)?\\(\\(?:[a-zA-Z]:\\)?[^:(\t\n]+\\)(\\([0-9]+\\)) : \\(?:see declaration\\|\\(?:warnin\\(g\\)\\|[a-z ]+\\) C[0-9]+:\\)"
     2 3 nil (4)))
+
+  ; Turn on line numbers
+  ;(linum-mode)
 )
 
 (defun casey-replace-string (FromString ToString)
@@ -351,9 +377,10 @@
 (defun maximize-frame ()
     "Maximize the current frame"
      (interactive)
+     (when casey-aquamacs (aquamacs-toggle-full-frame))
      (when casey-win32 (w32-send-sys-command 61488)))
 
-(define-key global-map "\ep" 'maximize-frame)
+(define-key global-map "\ep" 'quick-calc)
 (define-key global-map "\ew" 'other-window)
 
 ; Navigation
@@ -501,6 +528,7 @@
 ; Commands
 (set-variable 'grep-command "grep -irHn ")
 (when casey-win32
+    (setq grep-use-null-device t)
     (set-variable 'grep-command "findstr -s -n -i -l "))
 
 ; Smooth scroll
@@ -545,7 +573,7 @@
 (define-key global-map [C-tab] 'indent-region)
 (define-key global-map "	" 'indent-region)
 
-(defun casey-never-split-a-window
+(defun casey-never-split-a-window ()
     "Never, ever split a window.  Why would anyone EVER want you to do that??"
     nil)
 (setq split-window-preferred-function 'casey-never-split-a-window)

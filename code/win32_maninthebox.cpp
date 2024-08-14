@@ -8,11 +8,11 @@
 
 #include <windows.h>
 #include <stdint.h>
-#include <xinput.h>
 #include <functional>
 #include <iostream>
-
-constexpr auto XINPUT_DLL_NAME = "xinput1_4.dll";
+#include <fstream>
+#include <string>
+#include <SDL.h>
 
 #define internal static
 #define local_persist static
@@ -22,6 +22,7 @@ typedef int8_t int8;
 typedef int16_t int16;
 typedef int32_t int32;
 typedef int64_t int64;
+typedef int32 bool32;
 
 typedef uint8_t uint8;
 typedef uint16_t uint16;
@@ -44,53 +45,86 @@ struct win32_window_dimension
     int Height;
 };
 
-global_variable bool Running;
+global_variable bool32 Running;
 global_variable win32_offscreen_buffer GlobalBackbuffer;
+global_variable SDL_GameController* controller;
 
-// Define std::function types for XInput functions
-global_variable std::function<DWORD(DWORD, XINPUT_STATE*)> XInputMyGetState;
-global_variable std::function<DWORD(DWORD, XINPUT_VIBRATION*)> XInputMySetState;
-
-DWORD WINAPI XInputGetStateStub(DWORD, XINPUT_STATE*)
+internal void
+LoadControllerMappings(const std::string& mappingFile)
 {
-    return ERROR_DEVICE_NOT_CONNECTED; // Stub function
-}
+    std::ifstream file(mappingFile);
 
-DWORD WINAPI XInputSetStateStub(DWORD, XINPUT_VIBRATION*)
-{
-    return ERROR_DEVICE_NOT_CONNECTED; // Stub function
+    if (!file.is_open())
+    {
+        std::cerr << "Failed to open controller mapping file: " << mappingFile << std::endl;
+        return;
+    }
+
+    std::string line;
+    while (std::getline(file, line))
+    {
+        if (SDL_GameControllerAddMapping(line.c_str()) == -1)
+        {
+            std::cerr << "Failed to add mapping: " << line << " - " << SDL_GetError() << std::endl;
+        }
+        else
+        {
+            std::cout << "Added mapping: " << line << std::endl;
+        }
+    }
+
+    file.close();
 }
 
 internal void
-Win32LoadXInput(void)
+Win32InitDSound(void)
 {
-    HMODULE XInputLibrary = LoadLibraryA(XINPUT_DLL_NAME);
-    if (XInputLibrary)
-    {
-        auto GetState = reinterpret_cast<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(GetProcAddress(XInputLibrary, "XInputGetState"));
-        if (GetState)
-        {
-            XInputMyGetState = GetState; // Assign function pointer to std::function
-        }
-        else
-        {
-            XInputMyGetState = XInputGetStateStub;
-        }
+    HMODULE DSoundLibrary = LoadLibraryA("dsound.dll");
 
-        auto SetState = reinterpret_cast<DWORD(WINAPI*)(DWORD, XINPUT_VIBRATION*)>(GetProcAddress(XInputLibrary, "XInputSetState"));
-        if (SetState)
+    if(DSoundLibrary)
+    {
+        direct_sound_create *DirectSoundCreate = (direct_sound_create *)GetProcAddress(DSoundLibrary, "DirectSoundCreate");
+
+        DIRECTSOUND *DirectSound;
+        if(DirectSoundCreate && SUCCEEDED(DirectSoundCreate(0, &DirectSound, 0)))
         {
-            XInputMySetState = SetState; // Assign function pointer to std::function
         }
         else
         {
-            XInputMySetState = XInputSetStateStub;
+
         }
     }
     else
     {
-        XInputMyGetState = XInputGetStateStub;
-        XInputMySetState = XInputSetStateStub;
+
+    }
+}
+
+internal void
+OpenController(int joystick_index)
+{
+    if (SDL_IsGameController(joystick_index))
+    {
+        controller = SDL_GameControllerOpen(joystick_index);
+        if (controller)
+        {
+            std::cout << "Opened controller at index " << joystick_index << ": " << SDL_GameControllerName(controller) << std::endl;
+        }
+        else
+        {
+            std::cerr << "Could not open game controller at index " << joystick_index << ": " << SDL_GetError() << std::endl;
+        }
+    }
+}
+
+internal void
+CloseController()
+{
+    if (controller)
+    {
+        std::cout << "Closing controller " << std::endl;
+        SDL_GameControllerClose(controller);
+        controller = nullptr;
     }
 }
 
@@ -210,8 +244,8 @@ Win32MainWindowCallback(HWND Window,
         case WM_KEYUP:
         {
             uint32 VKCode = WParam;
-            bool WasDown = ((LParam & (1 << 30)) != 0);
-            bool IsDown = ((LParam & (1 << 31)) == 0);
+            bool32 WasDown = ((LParam & (1 << 30)) != 0);
+            bool32 IsDown = ((LParam & (1 << 31)) == 0);
             if(WasDown != IsDown)
             {
                 if(VKCode == 'W')
@@ -253,7 +287,7 @@ Win32MainWindowCallback(HWND Window,
                 }
             }
 
-            bool AltKeyWasDown = ((LParam & (1 << 29)) != 0);
+            bool32 AltKeyWasDown = ((LParam & (1 << 29)) != 0);
             if(VKCode == VK_F4 && AltKeyWasDown)
             {
                 Running = false;
@@ -294,7 +328,14 @@ WinMain(HINSTANCE Instance,
     int ShowCode)
 {
 
-    Win32LoadXInput();
+    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0)
+    {
+        std::cerr << "SDL could not initialize! SDL_Error: " << SDL_GetError() << std::endl;
+        return 1;
+    }
+
+    LoadControllerMappings("controller_mappings.txt");
+
     WNDCLASS WindowClass = {};
 
     Win32ResizeDIBSection(&GlobalBackbuffer, 1280, 720);
@@ -326,7 +367,11 @@ WinMain(HINSTANCE Instance,
             Running = true;
             int XOffset = 0;
             int YOffset = 0;
+
             HDC DeviceContext = GetDC(Window);
+
+            Win32InitDSound();
+
             while(Running)
             {
                 MSG Message;
@@ -342,45 +387,57 @@ WinMain(HINSTANCE Instance,
                     DispatchMessageA(&Message);
                 }
 
-                for(DWORD i = 0;
-                    i < XUSER_MAX_COUNT;
-                    ++i)
+                if(!controller)
                 {
-                    XINPUT_STATE ControllerState;
-                    ZeroMemory(&ControllerState, sizeof(XINPUT_STATE));
-
-                    if(XInputMyGetState(i, &ControllerState) == ERROR_SUCCESS)
+                    int numJoysticks = SDL_NumJoysticks();
+                    for (int i = 0; i < numJoysticks; ++i)
                     {
-                        XINPUT_GAMEPAD *Pad = &ControllerState.Gamepad;
-
-                        bool Up = (Pad->wButtons & XINPUT_GAMEPAD_DPAD_UP);
-                        bool Down = (Pad->wButtons & XINPUT_GAMEPAD_DPAD_DOWN);
-                        bool Left = (Pad->wButtons & XINPUT_GAMEPAD_DPAD_LEFT);
-                        bool Right = (Pad->wButtons & XINPUT_GAMEPAD_DPAD_RIGHT);
-                        bool Start = (Pad->wButtons & XINPUT_GAMEPAD_START);
-                        bool Back = (Pad->wButtons & XINPUT_GAMEPAD_BACK);
-                        bool LeftShoulder = (Pad->wButtons & XINPUT_GAMEPAD_LEFT_SHOULDER);
-                        bool RightShoulder = (Pad->wButtons & XINPUT_GAMEPAD_RIGHT_SHOULDER);
-                        bool AButton = (Pad->wButtons & XINPUT_GAMEPAD_A);
-                        bool BButton = (Pad->wButtons & XINPUT_GAMEPAD_B);
-                        bool XButton = (Pad->wButtons & XINPUT_GAMEPAD_X);
-                        bool YButton = (Pad->wButtons & XINPUT_GAMEPAD_Y);
-
-                        int16 StickX = Pad->sThumbLX;
-                        int16 StickY = Pad->sThumbLY;
-
-                        if(Up)
+                        if (SDL_IsGameController(i))
                         {
-                            YOffset += 2;
-                        }
-                        if(Down)
-                        {
-                            YOffset -= 2;
+                            OpenController(i);
+                            if (controller)
+                            {
+                                break;
+                            }
                         }
                     }
-                    else
+                }
+                else
+                {
+                    // Handle SDL Events
+                    SDL_Event event;
+                    while (SDL_PollEvent(&event))
                     {
-                        // Gamepad is not connected
+
+                        if(event.type == SDL_CONTROLLERDEVICEADDED)
+                        {
+                            int joystick_index = event.cdevice.which;
+                            std::cout << "Controller added at index " << joystick_index << std::endl;
+                            OpenController(joystick_index);
+                            break;
+                        }
+
+                        if(event.type == SDL_CONTROLLERDEVICEREMOVED)
+                        {
+                            int instance_id = event.cdevice.which;
+                            std::cout << "Controller removed" << std::endl;
+                            CloseController();
+                            break;
+                        }
+
+                        if (event.type == SDL_CONTROLLERBUTTONDOWN)
+                        {
+                            if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP)
+                            {
+                                YOffset += 20;
+                                std::cout << "D-pad Up pressed." << std::endl;
+                            }
+                            else if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN)
+                            {
+                                YOffset -= 20;
+                                std::cout << "D-pad Down pressed." << std::endl;
+                            }
+                        }
                     }
                 }
 
@@ -391,8 +448,13 @@ WinMain(HINSTANCE Instance,
                 Win32DisplayBufferInWindow(&GlobalBackbuffer, DeviceContext, Dimension.Width, Dimension.Height);
 
                 ++XOffset;
-                YOffset += 2;
+                //YOffset += 2;
 
+            }
+
+            if (controller)
+            {
+                CloseController();
             }
         }
         else
@@ -405,6 +467,6 @@ WinMain(HINSTANCE Instance,
     {
         // TODO(mite): Logging
     }
+    SDL_Quit();
     return(0);
 }
-
